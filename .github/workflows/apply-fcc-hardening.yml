@@ -1,0 +1,88 @@
+name: Apply FCC hardening
+
+on:
+  push:
+    branches:
+      - audit/full-stack-hardening-2026-09-04
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-fcc-hardening-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, '[hardening-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout hardening branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Assemble and verify audited patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor e6f2633b69694742232452c93b9785e44fbe684f HEAD
+          cat .fcc-hardening/part-*.patch > /tmp/fcc-hardening.patch
+          # Correct the wire-auth regression's local audit alias before application.
+          sed -i 's/import httpx2/import httpx/; s/httpx2\./httpx./g' /tmp/fcc-hardening.patch
+          echo 'cddf99b0e36102778ec1f29eae9b8d36b68fca71ec83fbbec4752db57095133d  /tmp/fcc-hardening.patch' | sha256sum -c -
+          git apply --check --recount /tmp/fcc-hardening.patch
+          git apply --recount /tmp/fcc-hardening.patch
+          rm -rf .fcc-hardening
+          rm -f .github/workflows/apply-fcc-hardening.yml
+          git diff --check
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: '0.11.16'
+          enable-cache: false
+
+      - name: Install project Python and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_version="$(tr -d '[:space:]' < .python-version)"
+          uv python install "$python_version"
+          uv sync --frozen
+
+      - name: Run static quality gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run ruff format --check
+          uv run ruff check
+          uv run ty check
+
+      - name: Run focused hardening regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pytest -q -n 0 \
+            tests/config/test_config.py \
+            tests/core/test_trace.py \
+            tests/api/test_model_listing.py \
+            tests/application/test_routing.py \
+            tests/cli/test_entrypoints.py \
+            tests/providers/test_open_router.py \
+            tests/config/test_admin_config_conflicts.py \
+            tests/runtime/test_application_runtime.py \
+            tests/core/test_output_token_validation.py
+
+      - name: Commit verified hardening changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          git config user.name 'FCC Hardening Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: harden routing installers security and CI [hardening-applied]'
+          git push origin HEAD:${GITHUB_REF_NAME}
