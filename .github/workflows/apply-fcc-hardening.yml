@@ -30,7 +30,6 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor e6f2633b69694742232452c93b9785e44fbe684f HEAD
           cat .fcc-hardening/part-*.patch > /tmp/fcc-hardening.patch
-          sed -i 's/import httpx2/import httpx/; s/httpx2\./httpx./g' /tmp/fcc-hardening.patch
           python - <<'PY'
           from pathlib import Path
           import re
@@ -46,9 +45,26 @@ jobs:
                   raise SystemExit(f'expected one patch block for {target}, found {count}')
           path.write_text(patch, encoding='utf-8')
           PY
-          echo 'c31df5bdf95fff35d8d242a2fe72f3652330089a3d45969b16cf09a944caf859  /tmp/fcc-hardening.patch' | sha256sum -c -
+          echo '53e0430aa396bdfffcedf8b177d9533338a24dc66f52a5808210fb94830820e2  /tmp/fcc-hardening.patch' | sha256sum -c -
           git apply --check --recount /tmp/fcc-hardening.patch
           git apply --recount /tmp/fcc-hardening.patch
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/runtime/test_application_runtime.py')
+          text = path.read_text(encoding='utf-8')
+          old = '    assert "Reload Admin and retry" in result["errors"][0]\n'
+          new = (
+              '    errors = result.get("errors")\n'
+              '    assert isinstance(errors, list)\n'
+              '    assert errors and isinstance(errors[0], str)\n'
+              '    assert "Reload Admin and retry" in errors[0]\n'
+          )
+          if old not in text:
+              raise SystemExit('expected Admin conflict assertion was not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
 
           cat > tests/config/test_hardening_defaults.py <<'PY'
           from free_claude_code.config.settings import Settings
