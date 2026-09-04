@@ -231,7 +231,9 @@ def _managed_config_snapshot(path: Path) -> tuple[dict[str, str], str | None]:
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ValueError(f"Could not parse configuration file {path}: not UTF-8") from exc
+        raise ValueError(
+            f"Could not parse configuration file {path}: not UTF-8"
+        ) from exc
     try:
         values = dotenv_values_from_text(text)
     except ValueError as exc:
