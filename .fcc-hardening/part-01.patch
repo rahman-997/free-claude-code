@@ -1,0 +1,151 @@
++    catch {
++        $failures += "ownership record: $($_.Exception.Message)"
++    }
++
++    if ($failures.Count -gt 0) {
++        throw "Muse Code installation rollback was incomplete: $($failures -join '; ')"
++    }
+ }
+ 
+ function Remove-EmptyMuseInstallDirectories {
+@@ -805,99 +805,115 @@
+         return
+     }
+ 
+-    if (
+-        (Test-Path -LiteralPath $paths.Root) -and
+-        (-not (Test-Path -LiteralPath $paths.Root -PathType Container))
+-    ) {
+-        throw "The managed Muse Code install path exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
+-    }
+-
+-    $record = Read-MuseOwnershipRecord -RecordPath $paths.Record
+-    if ($null -eq $record) {
++    $lifecycleMutex = Enter-MuseLifecycleLock
++    try {
+         if (
+-            (Test-Path -LiteralPath $paths.Root -PathType Container) -and
+-            @(Get-ChildItem -LiteralPath $paths.Root -Force).Count -gt 0
++            (Test-Path -LiteralPath $paths.Root) -and
++            (-not (Test-Path -LiteralPath $paths.Root -PathType Container))
+         ) {
+-            throw "The managed Muse Code directory exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
++            throw "The managed Muse Code install path exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
+         }
+ 
+-        $externalCommand = Resolve-MuseExternalCommand
+-        if ($null -ne $externalCommand) {
+-            $externalPath = [string] $externalCommand.Source
+-            $probe = Get-MuseVersionProbe -Path $externalPath
+-            if (-not $probe.Compatible) {
+-                throw "A conflicting 'muse' command at '$externalPath' $($probe.Reason). Update or remove that command, then rerun the installer."
++        $record = Read-MuseOwnershipRecord -RecordPath $paths.Record
++        if ($null -eq $record) {
++            if (
++                (Test-Path -LiteralPath $paths.Root -PathType Container) -and
++                @(Get-ChildItem -LiteralPath $paths.Root -Force).Count -gt 0
++            ) {
++                throw "The managed Muse Code directory exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
+             }
+-            Write-Host "Compatible Muse Code already found at '$externalPath'; leaving it unchanged."
++
++            $externalCommand = Resolve-MuseExternalCommand
++            if ($null -ne $externalCommand) {
++                $externalPath = [string] $externalCommand.Source
++                $probe = Get-MuseVersionProbe -Path $externalPath
++                if (-not $probe.Compatible) {
++                    throw "A conflicting 'muse' command at '$externalPath' $($probe.Reason). Update or remove that command, then rerun the installer."
++                }
++                Write-Host "Compatible Muse Code already found at '$externalPath'; leaving it unchanged."
++                return
++            }
++        }
++
++        $artifact = Get-MuseReleaseArtifact -Architecture $architecture
++        if (
++            $null -ne $record -and
++            (Test-MuseManagedArtifactCurrent -Paths $paths -Record $record -Artifact $artifact)
++        ) {
++            Update-MusePath -ManagedBin $paths.Bin
++            Assert-CompatibleMuseBinary `
++                -Path $paths.Executable `
++                -Context "The managed Muse Code executable"
++            Write-Host "Muse Code $($artifact.ReleaseVersion) is already current and verified."
+             return
+         }
+-    }
+ 
+-    $artifact = Get-MuseReleaseArtifact -Architecture $architecture
+-    if (
+-        $null -ne $record -and
+-        (Test-MuseManagedArtifactCurrent -Paths $paths -Record $record -Artifact $artifact)
+-    ) {
+-        Update-MusePath -ManagedBin $paths.Bin
+-        Assert-CompatibleMuseBinary `
+-            -Path $paths.Executable `
+-            -Context "The managed Muse Code executable"
+-        Write-Host "Muse Code $($artifact.ReleaseVersion) is already current and verified."
+-        return
+-    }
++        $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("fcc-muse-" + [guid]::NewGuid().ToString("N"))
++        $candidatePath = Join-Path $temporaryRoot "muse.exe"
++        try {
++            New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
++            Save-MuseArtifact -Url $artifact.Url -Destination $candidatePath
++            Assert-MuseArtifactIntegrity `
++                -Path $candidatePath `
++                -ExpectedSize $artifact.Size `
++                -ExpectedSha256 $artifact.Sha256
++            Assert-CompatibleMuseBinary `
++                -Path $candidatePath `
++                -Context "The downloaded Muse Code executable"
+ 
+-    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("fcc-muse-" + [guid]::NewGuid().ToString("N"))
+-    $candidatePath = Join-Path $temporaryRoot "muse.exe"
+-    try {
+-        New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+-        Save-MuseArtifact -Url $artifact.Url -Destination $candidatePath
+-        Assert-MuseArtifactIntegrity `
+-            -Path $candidatePath `
+-            -ExpectedSize $artifact.Size `
+-            -ExpectedSha256 $artifact.Sha256
+-        Assert-CompatibleMuseBinary `
+-            -Path $candidatePath `
+-            -Context "The downloaded Muse Code executable"
++            New-Item -ItemType Directory -Path $paths.Bin -Force | Out-Null
++            $previousRecordContent = if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
++                [IO.File]::ReadAllText($paths.Record)
++            }
++            else {
++                $null
++            }
++            $previousUserPath = [string] (Get-MuseUserPathValue)
++            $previousProcessPath = [string] $env:Path
++            $previousExecutableExisted = Test-Path `
++                -LiteralPath $paths.Executable `
++                -PathType Leaf
++            $previousExecutableBackup = $null
++            if ($previousExecutableExisted) {
++                $previousExecutableBackup = Join-Path $temporaryRoot "previous-muse.exe"
++                Copy-Item -LiteralPath $paths.Executable -Destination $previousExecutableBackup
++            }
+ 
+-        New-Item -ItemType Directory -Path $paths.Bin -Force | Out-Null
+-        $previousRecordContent = if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
+-            [IO.File]::ReadAllText($paths.Record)
+-        }
+-        else {
+-            $null
+-        }
+-        $recordWritten = $false
+-        try {
+-            Write-MuseOwnershipRecord -RecordPath $paths.Record -Artifact $artifact
+-            $recordWritten = $true
+-            Publish-MuseExecutable `
+-                -CandidatePath $candidatePath `
+-                -ExecutablePath $paths.Executable
+-        }
+-        catch {
+-            $publicationError = $_
+-            if ($recordWritten) {
++            try {
