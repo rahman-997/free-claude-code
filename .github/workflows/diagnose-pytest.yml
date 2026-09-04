@@ -6,9 +6,102 @@ on:
       - hardening/free-claude-code-2026-09-04
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  patch-muse-portability:
+    if: ${{ !contains(github.event.head_commit.message, '[muse-portability]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Add non-Windows lifecycle-lock identity fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          old = '''function Get-MuseLifecycleMutexName {
+              try {
+                  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+                  $sid = [string] $identity.User.Value
+              }
+              catch {
+                  throw "Could not determine the current Windows user for Muse lifecycle locking."
+              }
+              if ([string]::IsNullOrWhiteSpace($sid)) {
+                  throw "Could not determine the current Windows user for Muse lifecycle locking."
+              }
+              # Global namespace serializes the same user's lifecycle across Terminal Services sessions.
+              return "Global\\FreeClaudeCodeMuseLifecycle-$sid"
+          }
+          '''
+
+          new = '''function Get-MuseLifecycleMutexName {
+              $isWindowsPlatform = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+              if (-not $isWindowsPlatform) {
+                  $userName = [Environment]::UserName
+                  if ([string]::IsNullOrWhiteSpace($userName)) {
+                      throw "Could not determine the current user for Muse lifecycle locking."
+                  }
+                  $safeUserName = $userName -replace "[^A-Za-z0-9_.-]", "_"
+                  return "FreeClaudeCodeMuseLifecycle-$safeUserName"
+              }
+
+              try {
+                  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+                  $sid = [string] $identity.User.Value
+              }
+              catch {
+                  throw "Could not determine the current Windows user for Muse lifecycle locking."
+              }
+              if ([string]::IsNullOrWhiteSpace($sid)) {
+                  throw "Could not determine the current Windows user for Muse lifecycle locking."
+              }
+              # Global namespace serializes the same user's lifecycle across Terminal Services sessions.
+              return "Global\\FreeClaudeCodeMuseLifecycle-$sid"
+          }
+          '''
+
+          for relative in ("scripts/install-muse.ps1", "scripts/uninstall-muse.ps1"):
+              path = Path(relative)
+              text = path.read_text(encoding="utf-8")
+              if new in text:
+                  continue
+              if old not in text:
+                  raise SystemExit(f"expected lifecycle mutex function not found in {relative}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+          git diff --check
+          pwsh -NoProfile -Command '
+            . ./scripts/install-muse.ps1
+            $installer = Get-MuseLifecycleMutexName
+            . ./scripts/uninstall-muse.ps1
+            $uninstaller = Get-MuseLifecycleMutexName
+            if ($installer -ne $uninstaller) { throw "Lifecycle mutex names differ." }
+            if ([string]::IsNullOrWhiteSpace($installer)) { throw "Lifecycle mutex name is empty." }
+            Write-Host $installer
+          '
+
+      - name: Commit portability fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- scripts/install-muse.ps1 scripts/uninstall-muse.ps1; then
+            echo "Muse portability fix is already present."
+            exit 0
+          fi
+          git config user.name 'FCC Hardening Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add scripts/install-muse.ps1 scripts/uninstall-muse.ps1
+          git commit -m 'fix: keep Muse lifecycle locking testable cross-platform [muse-portability]'
+          git push origin HEAD:${GITHUB_REF_NAME}
+
   first-failure:
     runs-on: ubuntu-latest
     timeout-minutes: 20
