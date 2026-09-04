@@ -1,0 +1,66 @@
+name: Diagnose pytest
+
+on:
+  push:
+    branches:
+      - hardening/free-claude-code-2026-09-04
+
+permissions:
+  contents: read
+
+jobs:
+  first-failure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+
+      - name: Read Python version
+        id: python
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .python-version)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: '0.11.16'
+          enable-cache: false
+
+      - name: Install Python and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install "${{ steps.python.outputs.version }}"
+          uv sync --frozen
+
+      - name: Capture first pytest failure
+        id: pytest
+        shell: bash
+        run: |
+          set +e
+          uv run pytest -x -q -n 0 > "$RUNNER_TEMP/pytest-full.log" 2>&1
+          status=$?
+          tail -n 250 "$RUNNER_TEMP/pytest-full.log" > "$RUNNER_TEMP/pytest-failure-tail.log"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/pytest-failure-tail.log"
+          exit 0
+
+      - name: Upload pytest diagnostic
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pytest-first-failure
+          path: ${{ runner.temp }}/pytest-failure-tail.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail when pytest failed
+        if: steps.pytest.outputs.status != '0'
+        shell: bash
+        run: exit 1
