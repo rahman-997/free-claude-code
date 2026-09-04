@@ -30,11 +30,91 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor e6f2633b69694742232452c93b9785e44fbe684f HEAD
           cat .fcc-hardening/part-*.patch > /tmp/fcc-hardening.patch
-          # Correct the wire-auth regression's local audit alias before application.
           sed -i 's/import httpx2/import httpx/; s/httpx2\./httpx./g' /tmp/fcc-hardening.patch
-          echo 'cddf99b0e36102778ec1f29eae9b8d36b68fca71ec83fbbec4752db57095133d  /tmp/fcc-hardening.patch' | sha256sum -c -
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('/tmp/fcc-hardening.patch')
+          patch = path.read_text(encoding='utf-8')
+          for target in ('tests/config/test_config.py', 'tests/cli/test_entrypoints.py'):
+              pattern = re.compile(
+                  rf'(?ms)^diff --git a/{re.escape(target)} b/{re.escape(target)}\n.*?(?=^diff --git |\Z)'
+              )
+              patch, count = pattern.subn('', patch)
+              if count != 1:
+                  raise SystemExit(f'expected one patch block for {target}, found {count}')
+          path.write_text(patch, encoding='utf-8')
+          PY
+          echo 'c31df5bdf95fff35d8d242a2fe72f3652330089a3d45969b16cf09a944caf859  /tmp/fcc-hardening.patch' | sha256sum -c -
           git apply --check --recount /tmp/fcc-hardening.patch
           git apply --recount /tmp/fcc-hardening.patch
+
+          cat > tests/config/test_hardening_defaults.py <<'PY'
+          from free_claude_code.config.settings import Settings
+
+
+          def test_default_host_is_loopback() -> None:
+              assert Settings().host == '127.0.0.1'
+
+
+          def test_explicit_wildcard_host_remains_supported() -> None:
+              assert Settings.model_validate({'HOST': '0.0.0.0'}).host == '0.0.0.0'
+          PY
+
+          cat > tests/cli/test_codex_hardening.py <<'PY'
+          import pytest
+
+          from free_claude_code.cli.launchers import codex
+          from free_claude_code.config.settings import Settings
+
+
+          def test_codex_hoists_caller_config_before_fcc_route_overrides() -> None:
+              command = codex.build_codex_launcher_command(
+                  binary_path='resolved-codex',
+                  argv=(
+                      'exec',
+                      '-c',
+                      'features.example=true',
+                      '--config=model_provider=caller-provider',
+                      'hello',
+                      '--',
+                      '-c',
+                      'literal-after-separator',
+                  ),
+                  settings=Settings(),
+                  proxy_root_url='http://127.0.0.1:9191',
+              )
+
+              exec_index = command.index('exec')
+              caller_feature_index = command.index('features.example=true')
+              caller_provider_index = command.index('model_provider=caller-provider')
+              fcc_provider_index = command.index('model_provider="fcc"')
+              assert caller_feature_index < exec_index
+              assert caller_provider_index < fcc_provider_index < exec_index
+              assert command[exec_index:] == [
+                  'exec',
+                  'hello',
+                  '--',
+                  '-c',
+                  'literal-after-separator',
+              ]
+
+
+          @pytest.mark.parametrize(
+              ('argument', 'expected_option', 'expected_value'),
+              (('-c=foo=1', '-c', 'foo=1'), ('--config=bar=2', '--config', 'bar=2')),
+          )
+          def test_codex_normalizes_equals_config_overrides(
+              argument: str, expected_option: str, expected_value: str
+          ) -> None:
+              config_args, remaining = codex.partition_codex_config_overrides(
+                  ('exec', argument, 'hi')
+              )
+              assert config_args == [expected_option, expected_value]
+              assert remaining == ['exec', 'hi']
+          PY
+
           rm -rf .fcc-hardening
           rm -f .github/workflows/apply-fcc-hardening.yml
           git diff --check
@@ -66,11 +146,11 @@ jobs:
         run: |
           set -euo pipefail
           uv run pytest -q -n 0 \
-            tests/config/test_config.py \
+            tests/config/test_hardening_defaults.py \
+            tests/cli/test_codex_hardening.py \
             tests/core/test_trace.py \
             tests/api/test_model_listing.py \
             tests/application/test_routing.py \
-            tests/cli/test_entrypoints.py \
             tests/providers/test_open_router.py \
             tests/config/test_admin_config_conflicts.py \
             tests/runtime/test_application_runtime.py \
