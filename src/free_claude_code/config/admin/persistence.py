@@ -7,7 +7,7 @@ from pathlib import Path
 
 from free_claude_code.config.env_files import (
     FCC_CONFIG_SCHEMA_ENV,
-    dotenv_values_from_file,
+    dotenv_values_from_text,
 )
 from free_claude_code.config.env_migrations import (
     CONFIG_SCHEMA_VERSION,
@@ -103,9 +103,22 @@ def target_values_with_updates(
 ) -> dict[str, str]:
     """Return sparse managed state after applying valid partial-update semantics."""
 
+    values, _ = _target_values_with_updates_and_digest(updates)
+    return values
+
+
+def _target_values_with_updates_and_digest(
+    updates: Mapping[str, ConfigInputValue],
+) -> tuple[dict[str, str], str | None]:
+    """Build an update from one managed-config snapshot and its revision token."""
+
+    # Loading value state may consolidate/migrate the managed config. Capture the
+    # revision only after that process-owned mutation, and derive target values
+    # from the exact same bytes so the commit guard cannot reject our own migration
+    # or accept a target assembled from an older file revision.
     state = load_value_state()
     path = managed_env_path()
-    values = dotenv_values_from_file(path) if path.is_file() else {}
+    values, base_digest = _managed_config_snapshot(path)
     known = recognized_env_keys()
     for key in tuple(values):
         if key in known and key != FCC_CONFIG_SCHEMA_ENV and not values[key].strip():
@@ -127,7 +140,7 @@ def target_values_with_updates(
             values[key] = value
 
     values[FCC_CONFIG_SCHEMA_ENV] = CONFIG_SCHEMA_VERSION
-    return values
+    return values, base_digest
 
 
 def changed_pending_fields(
@@ -165,10 +178,8 @@ def prepare_admin_update(
     """Validate an update and construct its prospective Settings snapshot."""
 
     path = managed_env_path()
-    base_digest = _managed_config_digest(path)
-
     update_errors = _update_protocol_errors(updates)
-    target_values = target_values_with_updates(updates)
+    target_values, base_digest = _target_values_with_updates_and_digest(updates)
     settings, settings_errors = settings_from_values(target_values)
     errors = (
         *update_errors,
@@ -208,6 +219,24 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> JsonObject:
         return prepared.applied_response()
     finally:
         lock.release()
+
+
+def _managed_config_snapshot(path: Path) -> tuple[dict[str, str], str | None]:
+    """Read one managed config exactly once and return values plus revision."""
+
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return {}, None
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Could not parse configuration file {path}: not UTF-8") from exc
+    try:
+        values = dotenv_values_from_text(text)
+    except ValueError as exc:
+        raise ValueError(f"Could not parse configuration file {path}: {exc}") from exc
+    return values, hashlib.sha256(content).hexdigest()
 
 
 def _managed_config_digest(path: Path) -> str | None:
