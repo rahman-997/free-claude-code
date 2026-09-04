@@ -1,0 +1,380 @@
++            $residue = @(Get-ChildItem -LiteralPath $paths.Bin -Force -File | Where-Object {
++                $_.Name -cmatch '^\.muse-[0-9a-f]{32}\.(?:staging|backup)\.exe$'
++            })
++            foreach ($file in $residue) {
++                Remove-Item -LiteralPath $file.FullName -Force
++            }
++        }
++
++        $recordResidue = @(Get-ChildItem -LiteralPath $paths.Root -Force -File | Where-Object {
++            $_.Name -cmatch '^\.fcc-muse-install\.json\.[0-9a-f]{32}\.(?:tmp|backup)$'
+         })
+-        foreach ($file in $residue) {
++        foreach ($file in $recordResidue) {
+             Remove-Item -LiteralPath $file.FullName -Force
+         }
++
++        if (Test-Path -LiteralPath $paths.Executable -PathType Leaf) {
++            throw "The managed Muse Code executable could not be removed."
++        }
++
++        $currentUserPath = [string] (Get-MuseUserPathValue)
++        $newUserPath = Remove-MusePathValue `
++            -PathValue $currentUserPath `
++            -ManagedBin $paths.Bin
++        if (-not [string]::Equals($currentUserPath, $newUserPath, [StringComparison]::Ordinal)) {
++            Set-MuseUserPathValue -Value $newUserPath
++        }
++        $env:Path = Remove-MusePathValue `
++            -PathValue ([string] $env:Path) `
++            -ManagedBin $paths.Bin
++
++        if (
++            (Test-MusePathContains -PathValue ([string] (Get-MuseUserPathValue)) -ManagedBin $paths.Bin) -or
++            (Test-MusePathContains -PathValue ([string] $env:Path) -ManagedBin $paths.Bin)
++        ) {
++            throw "The managed Muse Code PATH entry could not be removed."
++        }
++
++        Remove-Item -LiteralPath $paths.Record -Force
++        if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
++            throw "The Muse ownership record could not be removed."
++        }
++
++        Remove-EmptyMuseDirectory -Path $paths.Bin
++        Remove-EmptyMuseDirectory -Path $paths.Root
++
++        if (Test-Path -LiteralPath $paths.Root -PathType Container) {
++            Write-Host "Muse Code was uninstalled; unknown files in '$($paths.Root)' were preserved."
++        }
++        else {
++            Write-Host "The FCC-managed Muse Code installation was removed."
++        }
+     }
+-
+-    $recordResidue = @(Get-ChildItem -LiteralPath $paths.Root -Force -File | Where-Object {
+-        $_.Name -cmatch '^\.fcc-muse-install\.json\.[0-9a-f]{32}\.(?:tmp|backup)$'
+-    })
+-    foreach ($file in $recordResidue) {
+-        Remove-Item -LiteralPath $file.FullName -Force
+-    }
+-
+-    if (Test-Path -LiteralPath $paths.Executable -PathType Leaf) {
+-        throw "The managed Muse Code executable could not be removed."
+-    }
+-
+-    $currentUserPath = [string] (Get-MuseUserPathValue)
+-    $newUserPath = Remove-MusePathValue `
+-        -PathValue $currentUserPath `
+-        -ManagedBin $paths.Bin
+-    if (-not [string]::Equals($currentUserPath, $newUserPath, [StringComparison]::Ordinal)) {
+-        Set-MuseUserPathValue -Value $newUserPath
+-    }
+-    $env:Path = Remove-MusePathValue `
+-        -PathValue ([string] $env:Path) `
+-        -ManagedBin $paths.Bin
+-
+-    if (
+-        (Test-MusePathContains -PathValue ([string] (Get-MuseUserPathValue)) -ManagedBin $paths.Bin) -or
+-        (Test-MusePathContains -PathValue ([string] $env:Path) -ManagedBin $paths.Bin)
+-    ) {
+-        throw "The managed Muse Code PATH entry could not be removed."
+-    }
+-
+-    Remove-Item -LiteralPath $paths.Record -Force
+-    if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
+-        throw "The Muse ownership record could not be removed."
+-    }
+-
+-    Remove-EmptyMuseDirectory -Path $paths.Bin
+-    Remove-EmptyMuseDirectory -Path $paths.Root
+-
+-    if (Test-Path -LiteralPath $paths.Root -PathType Container) {
+-        Write-Host "Muse Code was uninstalled; unknown files in '$($paths.Root)' were preserved."
+-    }
+-    else {
+-        Write-Host "The FCC-managed Muse Code installation was removed."
++    finally {
++        Exit-MuseLifecycleLock -Mutex $lifecycleMutex
+     }
+ }
+diff --git a/tests/scripts/test_muse_lifecycle_transaction.ps1 b/tests/scripts/test_muse_lifecycle_transaction.ps1
+new file mode 100644
+--- /dev/null
++++ b/tests/scripts/test_muse_lifecycle_transaction.ps1
+@@ -0,0 +1,154 @@
++Set-StrictMode -Version Latest
++$ErrorActionPreference = "Stop"
++
++function Assert-Equal {
++    param($Actual, $Expected, [string] $Label)
++    if (-not [object]::Equals($Actual, $Expected)) {
++        throw "$Label mismatch. Expected '$Expected', got '$Actual'."
++    }
++}
++
++$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
++$installerPath = Join-Path $repoRoot "scripts\install-muse.ps1"
++$uninstallerPath = Join-Path $repoRoot "scripts\uninstall-muse.ps1"
++
++. $installerPath
++$installerMutexName = Get-MuseLifecycleMutexName
++. $uninstallerPath
++$uninstallerMutexName = Get-MuseLifecycleMutexName
++Assert-Equal $installerMutexName $uninstallerMutexName "shared lifecycle mutex name"
++
++# Restore the installer functions after loading the uninstaller.
++. $installerPath
++
++$temporaryLocalAppData = Join-Path ([IO.Path]::GetTempPath()) ("fcc-muse-lifecycle-test-" + [guid]::NewGuid().ToString("N"))
++$originalLocalAppData = $env:LOCALAPPDATA
++$originalProcessPath = $env:Path
++$script:FakeUserPath = "C:\existing-user-bin"
++
++try {
++    $env:LOCALAPPDATA = $temporaryLocalAppData
++    $env:Path = "C:\existing-process-bin"
++
++    $paths = Get-MuseInstallPaths
++    New-Item -ItemType Directory -Path $paths.Bin -Force | Out-Null
++    [IO.File]::WriteAllText($paths.Executable, "old")
++    $previousRecord = [ordered] @{
++        schema_version = 1
++        owner = "free-claude-code-muse-installer"
++        release_version = "0.2.1-R1"
++        artifact_key = "x86_windows"
++        sha256 = ("a" * 64)
++        size = 3
++    } | ConvertTo-Json
++    [IO.File]::WriteAllText($paths.Record, $previousRecord)
++
++    function Get-MuseNativeArchitecture { return "AMD64" }
++    function Get-MuseArtifactKey { param([string] $Architecture) return "x86_windows" }
++    function Get-MuseReleaseArtifact {
++        param([string] $Architecture)
++        return [pscustomobject] @{
++            ReleaseVersion = "0.2.2-R1"
++            ArtifactKey = "x86_windows"
++            Url = "https://lookaside.facebook.com/muse.exe"
++            Sha256 = ("b" * 64)
++            Size = 3
++        }
++    }
++    function Test-MuseManagedArtifactCurrent { return $false }
++    function Save-MuseArtifact {
++        param([string] $Url, [string] $Destination)
++        [IO.File]::WriteAllText($Destination, "new")
++    }
++    function Assert-MuseArtifactIntegrity { }
++    $script:CompatibilityProbeCount = 0
++    function Assert-CompatibleMuseBinary {
++        param([string] $Path, [string] $Context)
++        $script:CompatibilityProbeCount += 1
++        if ($script:CompatibilityProbeCount -ge 2) {
++            throw "synthetic post-publication verification failure"
++        }
++    }
++    function Get-MuseUserPathValue { return $script:FakeUserPath }
++    function Set-MuseUserPathValue {
++        param([AllowEmptyString()][string] $Value)
++        $script:FakeUserPath = $Value
++    }
++
++    $failedAsExpected = $false
++    try {
++        Invoke-MuseInstaller
++    }
++    catch {
++        if ($_.Exception.Message -notmatch "synthetic post-publication verification failure") {
++            throw
++        }
++        $failedAsExpected = $true
++    }
++    if (-not $failedAsExpected) {
++        throw "Expected the synthetic post-publication verification failure."
++    }
++
++    Assert-Equal ([IO.File]::ReadAllText($paths.Executable)) "old" "executable rollback"
++    Assert-Equal ([IO.File]::ReadAllText($paths.Record)) $previousRecord "ownership rollback"
++    Assert-Equal $script:FakeUserPath "C:\existing-user-bin" "user PATH rollback"
++    Assert-Equal $env:Path "C:\existing-process-bin" "process PATH rollback"
++
++    # A separately owned mutex with the same name must block an uninstaller-side acquire.
++    $mutexName = Get-MuseLifecycleMutexName
++    $holderScript = @'
++param([string] $Name, [string] $Signal)
++$mutex = [Threading.Mutex]::new($false, $Name)
++$acquired = $mutex.WaitOne(5000)
++if (-not $acquired) { exit 2 }
++[IO.File]::WriteAllText($Signal, "held")
++Start-Sleep -Seconds 3
++$mutex.ReleaseMutex()
++$mutex.Dispose()
++'@
++    $holderPath = Join-Path $temporaryLocalAppData "hold-mutex.ps1"
++    $signalPath = Join-Path $temporaryLocalAppData "mutex-held.txt"
++    [IO.File]::WriteAllText($holderPath, $holderScript)
++    $holderArguments = @("-NoProfile", "-File", $holderPath, $mutexName, $signalPath) |
++        ForEach-Object { ConvertTo-MuseNativeArgument -Argument ([string] $_) }
++    $holder = Start-Process `
++        -FilePath (Get-Process -Id $PID).Path `
++        -ArgumentList ($holderArguments -join " ") `
++        -PassThru
++    try {
++        $deadline = [DateTime]::UtcNow.AddSeconds(5)
++        while (-not (Test-Path -LiteralPath $signalPath) -and [DateTime]::UtcNow -lt $deadline) {
++            Start-Sleep -Milliseconds 50
++        }
++        if (-not (Test-Path -LiteralPath $signalPath)) {
++            throw "Mutex holder did not become ready."
++        }
++
++        . $uninstallerPath
++        $blocked = $false
++        try {
++            $unexpected = Enter-MuseLifecycleLock -TimeoutMilliseconds 150
++            Exit-MuseLifecycleLock -Mutex $unexpected
++        }
++        catch {
++            if ($_.Exception.Message -match "Timed out waiting") {
++                $blocked = $true
++            }
++            else {
++                throw
++            }
++        }
++        if (-not $blocked) {
++            throw "Installer and uninstaller did not contend on the same mutex."
++        }
++    }
++    finally {
++        $holder.WaitForExit()
++        $holder.Dispose()
++    }
++}
++finally {
++    $env:LOCALAPPDATA = $originalLocalAppData
++    $env:Path = $originalProcessPath
++    Remove-Item -LiteralPath $temporaryLocalAppData -Recurse -Force -ErrorAction SilentlyContinue
++}
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index ecb3371..ab6f1e0 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -15,6 +15,9 @@ env:
+ 
+ on:
+   pull_request:
++  push:
++    branches:
++      - main
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.ref }}
+@@ -134,3 +137,66 @@ jobs:
+           path: test-results/
+           if-no-files-found: ignore
+           retention-days: 7
++
++  posix-installer-syntax:
++    name: installer-syntax-${{ matrix.os }}
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 5
++    permissions:
++      contents: read
++    strategy:
++      fail-fast: false
++      matrix:
++        os:
++          - ubuntu-latest
++          - macos-latest
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
++        with:
++          ref: ${{ github.event.pull_request.head.sha || github.ref }}
++          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
++          fetch-depth: 1
++      - name: Parse POSIX installers
++        shell: bash
++        run: bash -n scripts/install.sh scripts/uninstall.sh
++
++  windows-installer-syntax:
++    name: installer-syntax-windows
++    runs-on: windows-latest
++    timeout-minutes: 5
++    permissions:
++      contents: read
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
++        with:
++          ref: ${{ github.event.pull_request.head.sha || github.ref }}
++          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
++          fetch-depth: 1
++      - name: Parse PowerShell installers
++        shell: pwsh
++        run: |
++          $failed = $false
++          foreach ($path in @(
++            'scripts/install.ps1',
++            'scripts/uninstall.ps1',
++            'scripts/install-muse.ps1',
++            'scripts/uninstall-muse.ps1',
++            'scripts/ci.ps1'
++          )) {
++            $tokens = $null
++            $errors = $null
++            [void][System.Management.Automation.Language.Parser]::ParseFile(
++              (Resolve-Path $path).Path,
++              [ref]$tokens,
++              [ref]$errors
++            )
++            if ($errors.Count -gt 0) {
++              $failed = $true
++              Write-Error "PowerShell parse errors in $path`n$($errors | Out-String)"
++            }
++          }
++          if ($failed) { exit 1 }
++
++      - name: Exercise Windows Muse lifecycle transaction
++        shell: pwsh
++        run: ./tests/scripts/test_muse_lifecycle_transaction.ps1
+diff --git a/src/free_claude_code/core/trace.py b/src/free_claude_code/core/trace.py
+--- a/src/free_claude_code/core/trace.py
++++ b/src/free_claude_code/core/trace.py
+@@ -138,7 +138,8 @@
+             stream_chunks=count,
+             stream_bytes=nbytes,
+             outcome="exception_group",
+-            note=str(grp),
++            exc_type=type(grp).__name__,
++            exception_count=len(grp.exceptions),
+             **common,
+         )
+         raise
+diff --git a/tests/core/test_trace.py b/tests/core/test_trace.py
+--- a/tests/core/test_trace.py
++++ b/tests/core/test_trace.py
+@@ -170,4 +170,39 @@
+ 
+ 
+ @pytest.mark.asyncio
++async def test_traced_async_stream_exception_group_does_not_log_messages(tmp_path) -> None:
++    log_file = str(tmp_path / "exception_group.log")
++    configure_logging(log_file, force=True, level="DEBUG")
++
++    source = _CloseTrackingIterator(
++        [],
++        iteration_error=ExceptionGroup(
++            "api_key=GROUP_SECRET",
++            [RuntimeError("token=MEMBER_SECRET")],
++        ),
++    )
++
++    with pytest.raises(ExceptionGroup):
++        async for _chunk in traced_async_stream(
++            source,
++            stage="egress",
++            source="unit",
++            complete_event="stream.completed",
++            interrupted_event="stream.interrupted",
++            extra={"request_id": "req_exception_group"},
