@@ -36,7 +36,11 @@ jobs:
 
           path = Path('/tmp/fcc-hardening.patch')
           patch = path.read_text(encoding='utf-8')
-          for target in ('tests/config/test_config.py', 'tests/cli/test_entrypoints.py'):
+          for target in (
+              'tests/config/test_config.py',
+              'tests/cli/test_entrypoints.py',
+              '.github/workflows/tests.yml',
+          ):
               pattern = re.compile(
                   rf'(?ms)^diff --git a/{re.escape(target)} b/{re.escape(target)}\n.*?(?=^diff --git |\Z)'
               )
@@ -45,7 +49,7 @@ jobs:
                   raise SystemExit(f'expected one patch block for {target}, found {count}')
           path.write_text(patch, encoding='utf-8')
           PY
-          echo '53e0430aa396bdfffcedf8b177d9533338a24dc66f52a5808210fb94830820e2  /tmp/fcc-hardening.patch' | sha256sum -c -
+          echo 'e4598c4facc8b9639f1e2627f33fe975ccbb659a2d2d57b7148d4149bce5f2c0  /tmp/fcc-hardening.patch' | sha256sum -c -
           git apply --check --recount /tmp/fcc-hardening.patch
           git apply --recount /tmp/fcc-hardening.patch
 
@@ -132,7 +136,6 @@ jobs:
           PY
 
           rm -rf .fcc-hardening
-          rm -f .github/workflows/apply-fcc-hardening.yml
           git diff --check
 
       - name: Install uv
@@ -182,5 +185,5 @@ jobs:
           git config user.name 'FCC Hardening Bot'
           git config user.email 'actions@users.noreply.github.com'
           git add -A
-          git commit -m 'fix: harden routing installers security and CI [hardening-applied]'
+          git commit -m 'fix: harden routing installers security and provider boundaries [hardening-applied]'
           git push origin HEAD:${GITHUB_REF_NAME}
