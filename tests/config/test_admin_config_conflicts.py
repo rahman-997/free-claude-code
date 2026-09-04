@@ -60,3 +60,28 @@ def test_admin_commit_accepts_unchanged_snapshot(
 
     assert result["applied"] is True
     assert "MODEL=nvidia_nim/new" in path.read_text(encoding="utf-8")
+
+
+def test_admin_snapshot_revision_follows_load_time_migration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from free_claude_code.config.admin import persistence
+
+    path = tmp_path / ".env"
+    path.write_text("MODEL=nvidia_nim/old\n", encoding="utf-8")
+
+    def migrate_managed_config() -> dict[str, object]:
+        path.write_text(
+            "FCC_CONFIG_SCHEMA=1\nMODEL=nvidia_nim/old\n",
+            encoding="utf-8",
+        )
+        return {}
+
+    monkeypatch.setattr(persistence, "load_value_state", migrate_managed_config)
+    monkeypatch.setattr(persistence, "managed_env_path", lambda: path)
+
+    values, base_digest = persistence._target_values_with_updates_and_digest({})
+
+    assert values["FCC_CONFIG_SCHEMA"] == "1"
+    assert base_digest == _managed_config_digest(path)
