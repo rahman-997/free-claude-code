@@ -74,6 +74,12 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
     )
     assert "claude-sonnet-4-20250514" in ids
     assert "claude-fable-5" in ids
+    assert "claude-fable-5[1m]" in ids
+    assert "claude-opus-5" in ids
+    assert "claude-opus-5[1m]" in ids
+    assert "claude-opus-4-8[1m]" in ids
+    assert "claude-sonnet-5" in ids
+    assert "claude-sonnet-5[1m]" in ids
     assert data["first_id"] == ids[0]
     assert data["last_id"] == ids[-1]
     assert data["has_more"] is False

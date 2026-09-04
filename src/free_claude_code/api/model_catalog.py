@@ -82,6 +82,41 @@ SUPPORTED_CLAUDE_MODELS = [
         created_at="2026-06-09T00:00:00Z",
     ),
     ModelResponse(
+        id="claude-fable-5[1m]",
+        display_name="Claude Fable 5 (1M context)",
+        created_at="2026-06-09T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-opus-5",
+        display_name="Claude Opus 5",
+        created_at="2026-07-24T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-opus-5[1m]",
+        display_name="Claude Opus 5 (1M context)",
+        created_at="2026-07-24T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-opus-4-8",
+        display_name="Claude Opus 4.8",
+        created_at="2026-05-28T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-opus-4-8[1m]",
+        display_name="Claude Opus 4.8 (1M context)",
+        created_at="2026-05-28T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-sonnet-5",
+        display_name="Claude Sonnet 5",
+        created_at="2026-06-30T00:00:00Z",
+    ),
+    ModelResponse(
+        id="claude-sonnet-5[1m]",
+        display_name="Claude Sonnet 5 (1M context)",
+        created_at="2026-06-30T00:00:00Z",
+    ),
+    ModelResponse(
         id="claude-opus-4-20250514",
         display_name="Claude Opus 4",
         created_at="2025-05-14T00:00:00Z",

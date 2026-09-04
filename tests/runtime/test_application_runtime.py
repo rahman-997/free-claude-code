@@ -13,7 +13,10 @@ from free_claude_code.application.connected_accounts import (
 )
 from free_claude_code.application.errors import ApplicationUnavailableError
 from free_claude_code.application.model_metadata import ProviderModelInfo
-from free_claude_code.config.admin.persistence import PreparedAdminUpdate
+from free_claude_code.config.admin.persistence import (
+    ConfigWriteConflict,
+    PreparedAdminUpdate,
+)
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.openai_responses import OpenAIResponsesRequest
@@ -220,6 +223,7 @@ def _prepared(
         errors=(),
         pending_fields=pending_fields,
         path=tmp_path / ".env",
+        base_digest=None,
     )
 
 
@@ -443,6 +447,43 @@ async def test_persistence_failure_closes_candidate_and_preserves_current(
     ):
         await runtime.apply_admin_config({"MODEL": "nvidia_nim/new"})
 
+    assert manager.current_generation_id == 1
+    assert factory.runtimes[0].cleanup_calls == 0
+    assert factory.runtimes[1].cleanup_calls == 1
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_config_write_conflict_closes_candidate_and_returns_retryable_result(
+    tmp_path,
+) -> None:
+    factory = TrackingFactory()
+    manager = ProviderRuntimeManager(
+        _settings("nvidia_nim/old"),
+        runtime_factory=factory,
+    )
+    runtime = ApplicationRuntime(manager, transcriber=None)
+    prepared = _prepared(_settings("nvidia_nim/new"), tmp_path)
+
+    with (
+        patch(
+            "free_claude_code.runtime.application.prepare_admin_update",
+            return_value=prepared,
+        ),
+        patch(
+            "free_claude_code.runtime.application.commit_prepared_admin_update",
+            side_effect=ConfigWriteConflict("stale"),
+        ),
+    ):
+        result = await runtime.apply_admin_config({"MODEL": "nvidia_nim/new"})
+
+    assert result["applied"] is False
+    assert result["valid"] is True
+    assert result["conflict"] is True
+    errors = result.get("errors")
+    assert isinstance(errors, list)
+    assert errors and isinstance(errors[0], str)
+    assert "Reload Admin and retry" in errors[0]
     assert manager.current_generation_id == 1
     assert factory.runtimes[0].cleanup_calls == 0
     assert factory.runtimes[1].cleanup_calls == 1

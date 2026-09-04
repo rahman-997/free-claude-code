@@ -14,6 +14,70 @@ $script:MuseStableChannelUrl = "https://api.meta.ai/muse-code/channels/muse-stab
 $script:MuseOwner = "free-claude-code-muse-installer"
 $script:MuseOwnerSchemaVersion = 1
 $script:MuseMinimumVersion = [version] "0.2.1"
+$script:MuseLifecycleLockTimeoutMilliseconds = 600000
+
+function Get-MuseLifecycleMutexName {
+    $isWindowsPlatform = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+    if (-not $isWindowsPlatform) {
+        $userName = [Environment]::UserName
+        if ([string]::IsNullOrWhiteSpace($userName)) {
+            throw "Could not determine the current user for Muse lifecycle locking."
+        }
+        $safeUserName = $userName -replace "[^A-Za-z0-9_.-]", "_"
+        return "FreeClaudeCodeMuseLifecycle-$safeUserName"
+    }
+
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $sid = [string] $identity.User.Value
+    }
+    catch {
+        throw "Could not determine the current Windows user for Muse lifecycle locking."
+    }
+    if ([string]::IsNullOrWhiteSpace($sid)) {
+        throw "Could not determine the current Windows user for Muse lifecycle locking."
+    }
+    # Global namespace serializes the same user's lifecycle across Terminal Services sessions.
+    return "Global\FreeClaudeCodeMuseLifecycle-$sid"
+}
+
+function Enter-MuseLifecycleLock {
+    param(
+        [int] $TimeoutMilliseconds = $script:MuseLifecycleLockTimeoutMilliseconds
+    )
+
+    $mutex = [Threading.Mutex]::new($false, (Get-MuseLifecycleMutexName))
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw "Timed out waiting for another Muse Code install or uninstall operation to finish."
+        }
+        return $mutex
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-MuseLifecycleLock {
+    param([Parameter(Mandatory = $true)][Threading.Mutex] $Mutex)
+
+    try {
+        $Mutex.ReleaseMutex()
+    }
+    finally {
+        $Mutex.Dispose()
+    }
+}
 
 function Show-MuseInstallerUsage {
     @"
@@ -750,13 +814,90 @@ function Update-MusePath {
     param([Parameter(Mandatory = $true)][string] $ManagedBin)
 
     $currentUserPath = [string] (Get-MuseUserPathValue)
-    $newUserPath = Add-MusePathValue `
-        -PathValue $currentUserPath `
-        -ManagedBin $ManagedBin
-    if (-not [string]::Equals($currentUserPath, $newUserPath, [StringComparison]::Ordinal)) {
-        Set-MuseUserPathValue -Value $newUserPath
+    $currentProcessPath = [string] $env:Path
+    $userPathChanged = $false
+    try {
+        $newUserPath = Add-MusePathValue `
+            -PathValue $currentUserPath `
+            -ManagedBin $ManagedBin
+        if (-not [string]::Equals($currentUserPath, $newUserPath, [StringComparison]::Ordinal)) {
+            Set-MuseUserPathValue -Value $newUserPath
+            $userPathChanged = $true
+        }
+        $env:Path = Add-MusePathValue -PathValue $currentProcessPath -ManagedBin $ManagedBin
     }
-    $env:Path = Add-MusePathValue -PathValue ([string] $env:Path) -ManagedBin $ManagedBin
+    catch {
+        $pathError = $_
+        $env:Path = $currentProcessPath
+        if ($userPathChanged) {
+            try {
+                Set-MuseUserPathValue -Value $currentUserPath
+            }
+            catch {
+                throw "Muse Code PATH update failed and the previous user PATH could not be restored."
+            }
+        }
+        throw $pathError
+    }
+}
+
+function Restore-MuseInstallTransaction {
+    param(
+        [Parameter(Mandatory = $true)] $Paths,
+        [AllowNull()][string] $PreviousRecordContent,
+        [Parameter(Mandatory = $true)][bool] $PreviousExecutableExisted,
+        [AllowNull()][string] $PreviousExecutableBackup,
+        [AllowEmptyString()][string] $PreviousUserPath,
+        [AllowEmptyString()][string] $PreviousProcessPath
+    )
+
+    $failures = @()
+
+    # Restore data first and the ownership record last so the record remains the commit marker.
+    try {
+        if ($PreviousExecutableExisted) {
+            if (
+                [string]::IsNullOrWhiteSpace($PreviousExecutableBackup) -or
+                (-not (Test-Path -LiteralPath $PreviousExecutableBackup -PathType Leaf))
+            ) {
+                throw "the previous executable backup is missing"
+            }
+            Copy-Item `
+                -LiteralPath $PreviousExecutableBackup `
+                -Destination $Paths.Executable `
+                -Force
+        }
+        else {
+            Remove-Item `
+                -LiteralPath $Paths.Executable `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        $failures += "executable: $($_.Exception.Message)"
+    }
+
+    try {
+        Set-MuseUserPathValue -Value $PreviousUserPath
+    }
+    catch {
+        $failures += "user PATH: $($_.Exception.Message)"
+    }
+    $env:Path = $PreviousProcessPath
+
+    try {
+        Restore-MuseOwnershipRecord `
+            -RecordPath $Paths.Record `
+            -PreviousContent $PreviousRecordContent
+    }
+    catch {
+        $failures += "ownership record: $($_.Exception.Message)"
+    }
+
+    if ($failures.Count -gt 0) {
+        throw "Muse Code installation rollback was incomplete: $($failures -join '; ')"
+    }
 }
 
 function Remove-EmptyMuseInstallDirectories {
@@ -805,101 +946,117 @@ function Invoke-MuseInstaller {
         return
     }
 
-    if (
-        (Test-Path -LiteralPath $paths.Root) -and
-        (-not (Test-Path -LiteralPath $paths.Root -PathType Container))
-    ) {
-        throw "The managed Muse Code install path exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
-    }
-
-    $record = Read-MuseOwnershipRecord -RecordPath $paths.Record
-    if ($null -eq $record) {
+    $lifecycleMutex = Enter-MuseLifecycleLock
+    try {
         if (
-            (Test-Path -LiteralPath $paths.Root -PathType Container) -and
-            @(Get-ChildItem -LiteralPath $paths.Root -Force).Count -gt 0
+            (Test-Path -LiteralPath $paths.Root) -and
+            (-not (Test-Path -LiteralPath $paths.Root -PathType Container))
         ) {
-            throw "The managed Muse Code directory exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
+            throw "The managed Muse Code install path exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
         }
 
-        $externalCommand = Resolve-MuseExternalCommand
-        if ($null -ne $externalCommand) {
-            $externalPath = [string] $externalCommand.Source
-            $probe = Get-MuseVersionProbe -Path $externalPath
-            if (-not $probe.Compatible) {
-                throw "A conflicting 'muse' command at '$externalPath' $($probe.Reason). Update or remove that command, then rerun the installer."
+        $record = Read-MuseOwnershipRecord -RecordPath $paths.Record
+        if ($null -eq $record) {
+            if (
+                (Test-Path -LiteralPath $paths.Root -PathType Container) -and
+                @(Get-ChildItem -LiteralPath $paths.Root -Force).Count -gt 0
+            ) {
+                throw "The managed Muse Code directory exists but is not owned by FCC: '$($paths.Root)'. Move or remove it, then rerun the installer."
             }
-            Write-Host "Compatible Muse Code already found at '$externalPath'; leaving it unchanged."
+
+            $externalCommand = Resolve-MuseExternalCommand
+            if ($null -ne $externalCommand) {
+                $externalPath = [string] $externalCommand.Source
+                $probe = Get-MuseVersionProbe -Path $externalPath
+                if (-not $probe.Compatible) {
+                    throw "A conflicting 'muse' command at '$externalPath' $($probe.Reason). Update or remove that command, then rerun the installer."
+                }
+                Write-Host "Compatible Muse Code already found at '$externalPath'; leaving it unchanged."
+                return
+            }
+        }
+
+        $artifact = Get-MuseReleaseArtifact -Architecture $architecture
+        if (
+            $null -ne $record -and
+            (Test-MuseManagedArtifactCurrent -Paths $paths -Record $record -Artifact $artifact)
+        ) {
+            Update-MusePath -ManagedBin $paths.Bin
+            Assert-CompatibleMuseBinary `
+                -Path $paths.Executable `
+                -Context "The managed Muse Code executable"
+            Write-Host "Muse Code $($artifact.ReleaseVersion) is already current and verified."
             return
         }
-    }
 
-    $artifact = Get-MuseReleaseArtifact -Architecture $architecture
-    if (
-        $null -ne $record -and
-        (Test-MuseManagedArtifactCurrent -Paths $paths -Record $record -Artifact $artifact)
-    ) {
-        Update-MusePath -ManagedBin $paths.Bin
-        Assert-CompatibleMuseBinary `
-            -Path $paths.Executable `
-            -Context "The managed Muse Code executable"
-        Write-Host "Muse Code $($artifact.ReleaseVersion) is already current and verified."
-        return
-    }
-
-    $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("fcc-muse-" + [guid]::NewGuid().ToString("N"))
-    $candidatePath = Join-Path $temporaryRoot "muse.exe"
-    try {
-        New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
-        Save-MuseArtifact -Url $artifact.Url -Destination $candidatePath
-        Assert-MuseArtifactIntegrity `
-            -Path $candidatePath `
-            -ExpectedSize $artifact.Size `
-            -ExpectedSha256 $artifact.Sha256
-        Assert-CompatibleMuseBinary `
-            -Path $candidatePath `
-            -Context "The downloaded Muse Code executable"
-
-        New-Item -ItemType Directory -Path $paths.Bin -Force | Out-Null
-        $previousRecordContent = if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
-            [IO.File]::ReadAllText($paths.Record)
-        }
-        else {
-            $null
-        }
-        $recordWritten = $false
+        $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("fcc-muse-" + [guid]::NewGuid().ToString("N"))
+        $candidatePath = Join-Path $temporaryRoot "muse.exe"
         try {
-            Write-MuseOwnershipRecord -RecordPath $paths.Record -Artifact $artifact
-            $recordWritten = $true
-            Publish-MuseExecutable `
-                -CandidatePath $candidatePath `
-                -ExecutablePath $paths.Executable
-        }
-        catch {
-            $publicationError = $_
-            if ($recordWritten) {
+            New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
+            Save-MuseArtifact -Url $artifact.Url -Destination $candidatePath
+            Assert-MuseArtifactIntegrity `
+                -Path $candidatePath `
+                -ExpectedSize $artifact.Size `
+                -ExpectedSha256 $artifact.Sha256
+            Assert-CompatibleMuseBinary `
+                -Path $candidatePath `
+                -Context "The downloaded Muse Code executable"
+
+            New-Item -ItemType Directory -Path $paths.Bin -Force | Out-Null
+            $previousRecordContent = if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
+                [IO.File]::ReadAllText($paths.Record)
+            }
+            else {
+                $null
+            }
+            $previousUserPath = [string] (Get-MuseUserPathValue)
+            $previousProcessPath = [string] $env:Path
+            $previousExecutableExisted = Test-Path `
+                -LiteralPath $paths.Executable `
+                -PathType Leaf
+            $previousExecutableBackup = $null
+            if ($previousExecutableExisted) {
+                $previousExecutableBackup = Join-Path $temporaryRoot "previous-muse.exe"
+                Copy-Item -LiteralPath $paths.Executable -Destination $previousExecutableBackup
+            }
+
+            try {
+                Write-MuseOwnershipRecord -RecordPath $paths.Record -Artifact $artifact
+                Publish-MuseExecutable `
+                    -CandidatePath $candidatePath `
+                    -ExecutablePath $paths.Executable
+                Update-MusePath -ManagedBin $paths.Bin
+                Assert-CompatibleMuseBinary `
+                    -Path $paths.Executable `
+                    -Context "The published Muse Code executable"
+            }
+            catch {
+                $installationError = $_
                 try {
-                    Restore-MuseOwnershipRecord `
-                        -RecordPath $paths.Record `
-                        -PreviousContent $previousRecordContent
+                    Restore-MuseInstallTransaction `
+                        -Paths $paths `
+                        -PreviousRecordContent $previousRecordContent `
+                        -PreviousExecutableExisted $previousExecutableExisted `
+                        -PreviousExecutableBackup $previousExecutableBackup `
+                        -PreviousUserPath $previousUserPath `
+                        -PreviousProcessPath $previousProcessPath
                 }
                 catch {
-                    throw "Muse Code publication failed and the previous ownership record could not be restored."
+                    throw "Muse Code installation failed and rollback did not complete: $($_.Exception.Message)"
                 }
+                Remove-EmptyMuseInstallDirectories -Paths $paths
+                throw $installationError
             }
-            Remove-EmptyMuseInstallDirectories -Paths $paths
-            throw $publicationError
+        }
+        finally {
+            Remove-MuseTemporaryRoot -Path $temporaryRoot
         }
 
-        Update-MusePath -ManagedBin $paths.Bin
-        Assert-CompatibleMuseBinary `
-            -Path $paths.Executable `
-            -Context "The published Muse Code executable"
+        Write-Host "Muse Code $($artifact.ReleaseVersion) was installed and verified at '$($paths.Executable)'."
     }
     finally {
-        Remove-MuseTemporaryRoot -Path $temporaryRoot
+        Exit-MuseLifecycleLock -Mutex $lifecycleMutex
     }
-
-    Write-Host "Muse Code $($artifact.ReleaseVersion) was installed and verified at '$($paths.Executable)'."
 }
 
 if ($MyInvocation.InvocationName -ne ".") {

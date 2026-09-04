@@ -117,7 +117,7 @@ class MessagesRequest(BaseModel):
     model: str
     original_model: str | None = Field(default=None, exclude=True)
     resolved_provider_model: str | None = Field(default=None, exclude=True)
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
     messages: list[Message]
     system: str | list[SystemContent] | None = None
     stop_sequences: list[str] | None = None

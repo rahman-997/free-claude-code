@@ -1,6 +1,6 @@
 """Pydantic models for OpenAI Responses-compatible ingress."""
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from free_claude_code.core.json_types import JsonObject, JsonValue
 
@@ -19,7 +19,7 @@ class OpenAIResponsesRequest(BaseModel):
     stream: bool | None = True
     temperature: float | None = None
     top_p: float | None = None
-    max_output_tokens: int | None = None
+    max_output_tokens: int | None = Field(default=None, gt=0)
     metadata: JsonObject | None = None
     reasoning: JsonObject | None = None
     previous_response_id: str | None = None

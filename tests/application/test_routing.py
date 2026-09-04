@@ -62,6 +62,28 @@ def test_model_router_applies_opus_override(settings):
     assert request.model == "claude-opus-4-20250514"
 
 
+@pytest.mark.parametrize(
+    "claude_model",
+    ["claude-opus-5[1m]", "claude-opus-4-8[1m]"],
+)
+def test_model_router_preserves_long_context_alias_routing(settings, claude_model):
+    settings.model_opus = "open_router/deepseek/deepseek-r1"
+
+    routed = ModelRouter(settings).resolve_messages_request(
+        MessagesRequest(
+            model=claude_model,
+            max_tokens=100,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert routed.request.model == "deepseek/deepseek-r1"
+    assert routed.resolved.original_model == claude_model
+    assert (
+        routed.resolved.primary.provider_model_ref == "open_router/deepseek/deepseek-r1"
+    )
+
+
 def test_model_router_applies_fable_override(settings):
     settings.model_fable = "open_router/anthropic/claude-fable-5"
 

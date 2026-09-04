@@ -29,6 +29,7 @@ _PRINT_PROXY_AUTH_TOKEN_FLAG = "--print-proxy-auth-token"
 _DISPLAY_NAME = "Codex CLI"
 _DEFAULT_BINARY = "codex"
 _INSTALL_HINT = "Install Codex with: npm install -g @openai/codex"
+_CONFIG_OVERRIDE_OPTIONS = frozenset({"-c", "--config"})
 # Preserve CODEX_HOME: it owns durable user configuration, not parent-task identity.
 _STRIPPED_CODEX_ENV_KEYS = frozenset(
     {
@@ -115,8 +116,10 @@ def build_codex_launcher_command(
 ) -> list[str]:
     """Return a Codex command with ephemeral FCC provider config."""
 
+    caller_config_args, remaining_argv = partition_codex_config_overrides(argv)
     return [
         binary_path,
+        *caller_config_args,
         *catalog_config_args,
         *codex_config_args(
             api_url=_ensure_v1_url(proxy_root_url),
@@ -124,8 +127,56 @@ def build_codex_launcher_command(
                 catalog_models, getattr(settings, "model", None)
             ),
         ),
-        *argv,
+        *remaining_argv,
     ]
+
+
+def partition_codex_config_overrides(
+    argv: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    """Hoist caller config overrides ahead of FCC's route-owned overrides.
+
+    Codex treats ``-c`` / ``--config`` as global configuration, but current CLI
+    releases can discard global overrides that appear before a subcommand when a
+    second config override appears after it. FCC's provider/base-url/auth config
+    must never be lost that way. Preserve caller overrides, move them into one
+    global block, then let the FCC-owned block win on route keys by appearing last.
+    Arguments after ``--`` stay positional and are never rewritten.
+    """
+
+    before_separator, separator_and_after = _split_separator(argv)
+    config_args: list[str] = []
+    remaining: list[str] = []
+    index = 0
+    while index < len(before_separator):
+        argument = before_separator[index]
+        if argument in _CONFIG_OVERRIDE_OPTIONS:
+            if index + 1 >= len(before_separator):
+                remaining.append(argument)
+                index += 1
+                continue
+            config_args.extend((argument, before_separator[index + 1]))
+            index += 2
+            continue
+        if argument.startswith("--config="):
+            config_args.extend(("--config", argument.removeprefix("--config=")))
+            index += 1
+            continue
+        if argument.startswith("-c="):
+            config_args.extend(("-c", argument.removeprefix("-c=")))
+            index += 1
+            continue
+        remaining.append(argument)
+        index += 1
+    return config_args, [*remaining, *separator_and_after]
+
+
+def _split_separator(argv: Sequence[str]) -> tuple[list[str], list[str]]:
+    try:
+        index = argv.index("--")
+    except ValueError:
+        return list(argv), []
+    return list(argv[:index]), list(argv[index:])
 
 
 def build_codex_launcher_env(
