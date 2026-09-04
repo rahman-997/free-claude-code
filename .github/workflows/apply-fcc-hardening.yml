@@ -133,13 +133,15 @@ jobs:
           uv python install "$python_version"
           uv sync --frozen
 
-      - name: Run static quality gates
+      - name: Format and run static quality gates
         shell: bash
         run: |
           set -euo pipefail
+          uv run ruff format
           uv run ruff format --check
           uv run ruff check
           uv run ty check
+          git diff --check
 
       - name: Run focused hardening regressions
         shell: bash
