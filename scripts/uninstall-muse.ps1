@@ -14,6 +14,16 @@ $script:MuseOwnerSchemaVersion = 1
 $script:MuseLifecycleLockTimeoutMilliseconds = 600000
 
 function Get-MuseLifecycleMutexName {
+    $isWindowsPlatform = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+    if (-not $isWindowsPlatform) {
+        $userName = [Environment]::UserName
+        if ([string]::IsNullOrWhiteSpace($userName)) {
+            throw "Could not determine the current user for Muse lifecycle locking."
+        }
+        $safeUserName = $userName -replace "[^A-Za-z0-9_.-]", "_"
+        return "FreeClaudeCodeMuseLifecycle-$safeUserName"
+    }
+
     try {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
         $sid = [string] $identity.User.Value
