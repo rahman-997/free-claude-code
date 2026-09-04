@@ -11,6 +11,60 @@ $ErrorActionPreference = "Stop"
 
 $script:MuseOwner = "free-claude-code-muse-installer"
 $script:MuseOwnerSchemaVersion = 1
+$script:MuseLifecycleLockTimeoutMilliseconds = 600000
+
+function Get-MuseLifecycleMutexName {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $sid = [string] $identity.User.Value
+    }
+    catch {
+        throw "Could not determine the current Windows user for Muse lifecycle locking."
+    }
+    if ([string]::IsNullOrWhiteSpace($sid)) {
+        throw "Could not determine the current Windows user for Muse lifecycle locking."
+    }
+    # Global namespace serializes the same user's lifecycle across Terminal Services sessions.
+    return "Global\FreeClaudeCodeMuseLifecycle-$sid"
+}
+
+function Enter-MuseLifecycleLock {
+    param(
+        [int] $TimeoutMilliseconds = $script:MuseLifecycleLockTimeoutMilliseconds
+    )
+
+    $mutex = [Threading.Mutex]::new($false, (Get-MuseLifecycleMutexName))
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw "Timed out waiting for another Muse Code install or uninstall operation to finish."
+        }
+        return $mutex
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-MuseLifecycleLock {
+    param([Parameter(Mandatory = $true)][Threading.Mutex] $Mutex)
+
+    try {
+        $Mutex.ReleaseMutex()
+    }
+    finally {
+        $Mutex.Dispose()
+    }
+}
 
 function Show-MuseUninstallerUsage {
     @"
@@ -198,82 +252,89 @@ function Remove-EmptyMuseDirectory {
 
 function Invoke-MuseUninstaller {
     $paths = Get-MuseInstallPaths
-    $rootExists = Test-Path -LiteralPath $paths.Root -PathType Container
-    $recordExists = Test-Path -LiteralPath $paths.Record -PathType Leaf
+    $lifecycleMutex = Enter-MuseLifecycleLock
+    try {
+        # All ownership checks and mutations happen under the same lock as installation.
+        $rootExists = Test-Path -LiteralPath $paths.Root -PathType Container
+        $recordExists = Test-Path -LiteralPath $paths.Record -PathType Leaf
 
-    if (-not $rootExists -and -not $recordExists) {
-        Write-Host "No FCC-managed Muse Code installation was found."
-        return
-    }
-    if (-not $recordExists) {
-        throw "The Muse Code install root is not owned by FCC; refusing to remove '$($paths.Root)'."
-    }
+        if (-not $rootExists -and -not $recordExists) {
+            Write-Host "No FCC-managed Muse Code installation was found."
+            return
+        }
+        if (-not $recordExists) {
+            throw "The Muse Code install root is not owned by FCC; refusing to remove '$($paths.Root)'."
+        }
 
-    [void] (Read-MuseOwnershipRecord -RecordPath $paths.Record)
+        [void] (Read-MuseOwnershipRecord -RecordPath $paths.Record)
 
-    if ($DryRun) {
-        Write-Host "Dry run: remove the FCC-managed executable and installer residue from '$($paths.Bin)'."
-        Write-Host "Dry run: remove exact '$($paths.Bin)' entries from the user and current-process PATH."
-        Write-Host "Dry run: remove the ownership record '$($paths.Record)' and empty managed directories."
-        Write-Host "Dry run complete. No changes were made."
-        return
-    }
+        if ($DryRun) {
+            Write-Host "Dry run: remove the FCC-managed executable and installer residue from '$($paths.Bin)'."
+            Write-Host "Dry run: remove exact '$($paths.Bin)' entries from the user and current-process PATH."
+            Write-Host "Dry run: remove the ownership record '$($paths.Record)' and empty managed directories."
+            Write-Host "Dry run complete. No changes were made."
+            return
+        }
 
-    if (Test-Path -LiteralPath $paths.Executable -PathType Leaf) {
-        Remove-Item -LiteralPath $paths.Executable -Force
-    }
+        if (Test-Path -LiteralPath $paths.Executable -PathType Leaf) {
+            Remove-Item -LiteralPath $paths.Executable -Force
+        }
 
-    if (Test-Path -LiteralPath $paths.Bin -PathType Container) {
-        $residue = @(Get-ChildItem -LiteralPath $paths.Bin -Force -File | Where-Object {
-            $_.Name -cmatch '^\.muse-[0-9a-f]{32}\.(?:staging|backup)\.exe$'
+        if (Test-Path -LiteralPath $paths.Bin -PathType Container) {
+            $residue = @(Get-ChildItem -LiteralPath $paths.Bin -Force -File | Where-Object {
+                $_.Name -cmatch '^\.muse-[0-9a-f]{32}\.(?:staging|backup)\.exe$'
+            })
+            foreach ($file in $residue) {
+                Remove-Item -LiteralPath $file.FullName -Force
+            }
+        }
+
+        $recordResidue = @(Get-ChildItem -LiteralPath $paths.Root -Force -File | Where-Object {
+            $_.Name -cmatch '^\.fcc-muse-install\.json\.[0-9a-f]{32}\.(?:tmp|backup)$'
         })
-        foreach ($file in $residue) {
+        foreach ($file in $recordResidue) {
             Remove-Item -LiteralPath $file.FullName -Force
         }
-    }
 
-    $recordResidue = @(Get-ChildItem -LiteralPath $paths.Root -Force -File | Where-Object {
-        $_.Name -cmatch '^\.fcc-muse-install\.json\.[0-9a-f]{32}\.(?:tmp|backup)$'
-    })
-    foreach ($file in $recordResidue) {
-        Remove-Item -LiteralPath $file.FullName -Force
-    }
+        if (Test-Path -LiteralPath $paths.Executable -PathType Leaf) {
+            throw "The managed Muse Code executable could not be removed."
+        }
 
-    if (Test-Path -LiteralPath $paths.Executable -PathType Leaf) {
-        throw "The managed Muse Code executable could not be removed."
-    }
+        $currentUserPath = [string] (Get-MuseUserPathValue)
+        $newUserPath = Remove-MusePathValue `
+            -PathValue $currentUserPath `
+            -ManagedBin $paths.Bin
+        if (-not [string]::Equals($currentUserPath, $newUserPath, [StringComparison]::Ordinal)) {
+            Set-MuseUserPathValue -Value $newUserPath
+        }
+        $env:Path = Remove-MusePathValue `
+            -PathValue ([string] $env:Path) `
+            -ManagedBin $paths.Bin
 
-    $currentUserPath = [string] (Get-MuseUserPathValue)
-    $newUserPath = Remove-MusePathValue `
-        -PathValue $currentUserPath `
-        -ManagedBin $paths.Bin
-    if (-not [string]::Equals($currentUserPath, $newUserPath, [StringComparison]::Ordinal)) {
-        Set-MuseUserPathValue -Value $newUserPath
-    }
-    $env:Path = Remove-MusePathValue `
-        -PathValue ([string] $env:Path) `
-        -ManagedBin $paths.Bin
+        if (
+            (Test-MusePathContains -PathValue ([string] (Get-MuseUserPathValue)) -ManagedBin $paths.Bin) -or
+            (Test-MusePathContains -PathValue ([string] $env:Path) -ManagedBin $paths.Bin)
+        ) {
+            throw "The managed Muse Code PATH entry could not be removed."
+        }
 
-    if (
-        (Test-MusePathContains -PathValue ([string] (Get-MuseUserPathValue)) -ManagedBin $paths.Bin) -or
-        (Test-MusePathContains -PathValue ([string] $env:Path) -ManagedBin $paths.Bin)
-    ) {
-        throw "The managed Muse Code PATH entry could not be removed."
-    }
+        Remove-Item -LiteralPath $paths.Record -Force
+        if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
+            throw "The Muse ownership record could not be removed."
+        }
 
-    Remove-Item -LiteralPath $paths.Record -Force
-    if (Test-Path -LiteralPath $paths.Record -PathType Leaf) {
-        throw "The Muse ownership record could not be removed."
-    }
+        Remove-EmptyMuseDirectory -Path $paths.Bin
+        Remove-EmptyMuseDirectory -Path $paths.Root
 
-    Remove-EmptyMuseDirectory -Path $paths.Bin
-    Remove-EmptyMuseDirectory -Path $paths.Root
-
-    if (Test-Path -LiteralPath $paths.Root -PathType Container) {
-        Write-Host "Muse Code was uninstalled; unknown files in '$($paths.Root)' were preserved."
+        if (Test-Path -LiteralPath $paths.Root -PathType Container) {
+            Write-Host "Muse Code was uninstalled; unknown files in '$($paths.Root)' were preserved."
+        }
+        else {
+            Write-Host "The FCC-managed Muse Code installation was removed."
+        }
     }
-    else {
-        Write-Host "The FCC-managed Muse Code installation was removed."
+    finally {
+        Exit-MuseLifecycleLock -Mutex $lifecycleMutex
     }
 }
 

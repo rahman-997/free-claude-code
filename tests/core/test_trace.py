@@ -161,6 +161,43 @@ async def test_traced_async_stream_logs_real_exception(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_traced_async_stream_exception_group_does_not_log_messages(
+    tmp_path,
+) -> None:
+    log_file = str(tmp_path / "exception_group.log")
+    configure_logging(log_file, force=True, level="DEBUG")
+
+    source = _CloseTrackingIterator(
+        [],
+        iteration_error=ExceptionGroup(
+            "api_key=GROUP_SECRET",
+            [RuntimeError("token=MEMBER_SECRET")],
+        ),
+    )
+
+    with pytest.raises(ExceptionGroup):
+        async for _chunk in traced_async_stream(
+            source,
+            stage="egress",
+            source="unit",
+            complete_event="stream.completed",
+            interrupted_event="stream.interrupted",
+            extra={"request_id": "req_exception_group"},
+        ):
+            pass
+
+    rows = _json_log_rows(log_file)
+    interrupted = [row for row in rows if row.get("event") == "stream.interrupted"]
+    assert len(interrupted) == 1
+    assert interrupted[0]["outcome"] == "exception_group"
+    assert interrupted[0]["exc_type"] == "ExceptionGroup"
+    assert interrupted[0]["exception_count"] == 1
+    log_text = Path(log_file).read_text(encoding="utf-8")
+    assert "GROUP_SECRET" not in log_text
+    assert "MEMBER_SECRET" not in log_text
+
+
+@pytest.mark.asyncio
 async def test_traced_async_stream_closes_quietly_on_generator_exit(tmp_path) -> None:
     log_file = str(tmp_path / "generator_exit.log")
     configure_logging(log_file, force=True, level="DEBUG")
