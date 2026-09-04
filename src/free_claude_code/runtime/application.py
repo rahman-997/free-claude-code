@@ -23,6 +23,7 @@ from free_claude_code.application.errors import ApplicationUnavailableError
 from free_claude_code.application.model_metadata import ProviderModelRefreshResult
 from free_claude_code.application.ports import StopResult
 from free_claude_code.config.admin.persistence import (
+    ConfigWriteConflict,
     PreparedAdminUpdate,
     commit_prepared_admin_update,
     prepare_admin_update,
@@ -191,7 +192,10 @@ class ApplicationRuntime:
             assert prepared.settings is not None
 
             if prepared.pending_fields:
-                result = self._commit_admin_update(prepared)
+                try:
+                    result = self._commit_admin_update(prepared)
+                except ConfigWriteConflict:
+                    return prepared.conflict_response()
                 restart = self._restart_metadata(
                     prepared.pending_fields,
                     prepared.settings,
@@ -207,11 +211,14 @@ class ApplicationRuntime:
             def commit() -> None:
                 result.update(self._commit_admin_update(prepared))
 
-            await self.provider_manager.replace(
-                prepared.settings,
-                commit=commit,
-                reason="admin_apply",
-            )
+            try:
+                await self.provider_manager.replace(
+                    prepared.settings,
+                    commit=commit,
+                    reason="admin_apply",
+                )
+            except ConfigWriteConflict:
+                return prepared.conflict_response()
             self._pending_fields = []
             result["restart"] = self._restart_metadata((), prepared.settings)
             return result

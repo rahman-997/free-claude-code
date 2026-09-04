@@ -15,6 +15,9 @@ env:
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -134,3 +137,65 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  posix-installer-syntax:
+    name: installer-syntax-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          fetch-depth: 1
+      - name: Parse POSIX installers
+        shell: bash
+        run: bash -n scripts/install.sh scripts/uninstall.sh
+
+  windows-installer-syntax:
+    name: installer-syntax-windows
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          fetch-depth: 1
+      - name: Parse PowerShell installers
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($path in @(
+            'scripts/install.ps1',
+            'scripts/uninstall.ps1',
+            'scripts/install-muse.ps1',
+            'scripts/uninstall-muse.ps1',
+            'scripts/ci.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "PowerShell parse errors in $path`n$($errors | Out-String)"
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Exercise Windows Muse lifecycle transaction
+        shell: pwsh
+        run: ./tests/scripts/test_muse_lifecycle_transaction.ps1

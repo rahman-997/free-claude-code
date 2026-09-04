@@ -4,7 +4,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx2
 import pytest
+from openai import AsyncOpenAI
 
 from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.application.model_metadata import ProviderModelInfo
@@ -82,6 +84,33 @@ def test_init_uses_openai_chat_provider(open_router_provider):
     assert isinstance(open_router_provider, OpenAIChatProvider)
     assert open_router_provider._api_key == "test_openrouter_key"
     assert open_router_provider._base_url == "https://openrouter.ai/api/v1"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_model_catalog_sends_configured_bearer_auth(
+    open_router_provider,
+) -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, json={"object": "list", "data": []})
+
+    await open_router_provider._client.close()
+    open_router_provider._client = AsyncOpenAI(
+        api_key="wire-openrouter-key",
+        base_url="https://openrouter.ai/api/v1",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    try:
+        await open_router_provider._list_models_payload()
+    finally:
+        await open_router_provider.cleanup()
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://openrouter.ai/api/v1/models"
+    assert requests[0].headers["authorization"] == "Bearer wire-openrouter-key"
 
 
 def test_build_request_body_uses_openai_chat_shape(open_router_provider):

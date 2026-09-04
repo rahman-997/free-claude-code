@@ -153,7 +153,8 @@ async def traced_async_stream(
             stream_chunks=count,
             stream_bytes=nbytes,
             outcome="exception_group",
-            note=str(grp),
+            exc_type=type(grp).__name__,
+            exception_count=len(grp.exceptions),
             **common,
         )
         raise
