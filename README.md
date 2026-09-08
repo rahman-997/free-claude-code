@@ -23,6 +23,11 @@
   <em>Independent open-source project. Not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic.</em>
 </p>
 
+<p align="center">
+  <strong>This fork is maintained by <a href="https://github.com/rahman-997">Abdulrahman Hajar</a>.</strong><br>
+  Upstream project: <a href="https://github.com/Alishahryar1/free-claude-code">Alishahryar1/free-claude-code</a>.
+</p>
+
 ## What You Get
 
 - **50 ToS-friendly providers. 1.3B+ free tokens every month.** Use free, paid, subscription, and local models from one searchable UI without putting your account at risk. FCC follows provider terms and removes integrations if they stop being allowed.
