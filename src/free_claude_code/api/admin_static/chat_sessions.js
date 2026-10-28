@@ -1871,9 +1871,14 @@
     commitPendingDeltas(operation);
     const scroller = document.getElementById("chatTranscript");
     const shouldFollow = scroller ? nearBottom(scroller) : true;
+    const scrollTop = scroller?.scrollTop || 0;
     renderTranscript();
     refreshComposerState();
-    if (shouldFollow) scrollLatest(false);
+    if (shouldFollow) {
+      scrollLatest(false);
+    } else if (scroller) {
+      scroller.scrollTop = scrollTop;
+    }
   }
 
   async function stopOperation() {
