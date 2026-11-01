@@ -90,6 +90,13 @@ def admin_page(request: Request):
     return admin_page_response()
 
 
+@router.get("/admin/switchboard", include_in_schema=False)
+def admin_switchboard_page(request: Request):
+    """Read-only provider status surface behind the existing loopback guard."""
+    require_loopback_admin(request)
+    return HTMLResponse(_asset_path("switchboard.html").read_text(encoding="utf-8"))
+
+
 @router.get("/admin/assets/{version}/{filename}", include_in_schema=False)
 async def admin_asset(version: str, filename: str, request: Request):
     require_loopback_admin(request)
