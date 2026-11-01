@@ -103,6 +103,12 @@ def test_switchboard_page_is_loopback_only_and_read_only(monkeypatch, tmp_path):
     assert "Switchboard" in response.text
     assert "/admin/api/config" in response.text
     assert "Agent runs, costs" in response.text
+    csp = response.headers["content-security-policy"]
+    assert "script-src 'sha256-" in csp
+    assert "style-src 'sha256-" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp
+    assert response.headers["x-frame-options"] == "DENY"
     remote_client = TestClient(app, client=("203.0.113.10", 50000))
     assert remote_client.get("/admin/switchboard").status_code == 403
 
