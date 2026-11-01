@@ -95,13 +95,23 @@ def admin_page(request: Request):
 
 def _switchboard_csp(html: str) -> str:
     """Only the exact bundled CSS and JavaScript may run in this local-only page."""
-    styles = re.findall(r"<style\b[^>]*>(.*?)</style>", html, flags=re.IGNORECASE | re.DOTALL)
-    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, flags=re.IGNORECASE | re.DOTALL)
+    styles = re.findall(
+        r"<style\b[^>]*>(.*?)</style>", html, flags=re.IGNORECASE | re.DOTALL
+    )
+    scripts = re.findall(
+        r"<script\b[^>]*>(.*?)</script>", html, flags=re.IGNORECASE | re.DOTALL
+    )
     if len(styles) != 1 or len(scripts) != 1:
         raise ValueError("Switchboard requires exactly one style and script block")
 
     def digest(value: str) -> str:
-        return "'sha256-" + base64.b64encode(hashlib.sha256(value.encode("utf-8")).digest()).decode("ascii") + "'"
+        return (
+            "'sha256-"
+            + base64.b64encode(hashlib.sha256(value.encode("utf-8")).digest()).decode(
+                "ascii"
+            )
+            + "'"
+        )
 
     return "; ".join(
         (
