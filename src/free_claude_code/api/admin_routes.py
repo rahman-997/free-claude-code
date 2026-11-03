@@ -1,6 +1,9 @@
 """Local admin UI routes and APIs."""
 
 import asyncio
+import base64
+import hashlib
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -88,6 +91,56 @@ def admin_page_response() -> HTMLResponse:
 def admin_page(request: Request):
     require_loopback_admin(request)
     return admin_page_response()
+
+
+def _switchboard_csp(html: str) -> str:
+    """Only the exact bundled CSS and JavaScript may run in this local-only page."""
+    styles = re.findall(
+        r"<style\b[^>]*>(.*?)</style>", html, flags=re.IGNORECASE | re.DOTALL
+    )
+    scripts = re.findall(
+        r"<script\b[^>]*>(.*?)</script>", html, flags=re.IGNORECASE | re.DOTALL
+    )
+    if len(styles) != 1 or len(scripts) != 1:
+        raise ValueError("Switchboard requires exactly one style and script block")
+
+    def digest(value: str) -> str:
+        return (
+            "'sha256-"
+            + base64.b64encode(hashlib.sha256(value.encode("utf-8")).digest()).decode(
+                "ascii"
+            )
+            + "'"
+        )
+
+    return "; ".join(
+        (
+            "default-src 'none'",
+            "base-uri 'none'",
+            "object-src 'none'",
+            "form-action 'self'",
+            "connect-src 'self'",
+            "script-src " + digest(scripts[0]),
+            "style-src " + digest(styles[0]),
+            "frame-ancestors 'none'",
+        )
+    )
+
+
+@router.get("/admin/switchboard", include_in_schema=False)
+def admin_switchboard_page(request: Request):
+    """Read-only provider status surface behind the existing loopback guard."""
+    require_loopback_admin(request)
+    html = _asset_path("switchboard.html").read_text(encoding="utf-8")
+    return HTMLResponse(
+        html,
+        headers={
+            "Content-Security-Policy": _switchboard_csp(html),
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/admin/assets/{version}/{filename}", include_in_schema=False)

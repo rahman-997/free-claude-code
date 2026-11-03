@@ -95,6 +95,24 @@ def test_admin_page_is_loopback_only(monkeypatch, tmp_path):
     assert remote_client.get("/admin").status_code == 403
 
 
+def test_switchboard_page_is_loopback_only_and_read_only(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    app = create_test_app()
+    response = _local_client(app).get("/admin/switchboard")
+    assert response.status_code == 200
+    assert "Switchboard" in response.text
+    assert "/admin/api/config" in response.text
+    assert "Agent runs, costs" in response.text
+    csp = response.headers["content-security-policy"]
+    assert "script-src 'sha256-" in csp
+    assert "style-src 'sha256-" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp
+    assert response.headers["x-frame-options"] == "DENY"
+    remote_client = TestClient(app, client=("203.0.113.10", 50000))
+    assert remote_client.get("/admin/switchboard").status_code == 403
+
+
 def test_admin_page_uses_installed_version(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     monkeypatch.setattr(
