@@ -1,6 +1,7 @@
 import json
 import re
 
+import pytest
 from playwright.sync_api import Page, Request, expect
 
 
@@ -924,9 +925,11 @@ def test_manual_compaction_failure_remains_visible(
     expect(notice).to_have_text("summary provider failed")
 
 
+@pytest.mark.parametrize("reader_scroll_top", [0, 400])
 def test_long_transcript_keeps_composer_visible_and_preserves_reader_scroll_position(
     page: Page,
     admin_base_url: str,
+    reader_scroll_top: int,
 ) -> None:
     _new_chat(page, admin_base_url)
     long_message = "[slow]\n" + "\n".join(
@@ -947,13 +950,13 @@ def test_long_transcript_keeps_composer_visible_and_preserves_reader_scroll_posi
         "node => { const box = node.getBoundingClientRect(); "
         "return box.top >= 0 && box.bottom <= window.innerHeight; }"
     )
-    scroller.evaluate("node => { node.scrollTop = 0; }")
+    scroller.evaluate("(node, top) => { node.scrollTop = top; }", reader_scroll_top)
 
     page.get_by_role("button", name="Stop").click()
 
     expect(page.get_by_role("button", name="Retry")).to_be_visible()
     assert composer_is_fully_visible
-    assert scroller.evaluate("node => node.scrollTop") < 10
+    assert abs(scroller.evaluate("node => node.scrollTop") - reader_scroll_top) < 10
 
 
 def test_chat_composer_is_one_compact_surface_and_grows_to_six_lines(

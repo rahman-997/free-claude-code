@@ -105,6 +105,21 @@ in Admin.
   <img src="assets/admin-page.png" alt="Free Claude Code Admin UI" width="700">
 </div>
 
+#### Local Switchboard (read-only)
+
+The Admin UI includes a **Switchboard** link that opens `/admin/switchboard`.
+It summarizes provider configuration/status information returned by the existing
+`/admin/api/config` endpoint. You can filter the provider list by reported
+status or refresh it manually; the view refreshes every 60 seconds while visible.
+
+The dashboard stays behind the same **localhost-only** Admin access guard.
+It uses a strict hash-based Content Security Policy, never saves API secrets in
+browser storage, and does not change provider settings or invoke models.
+
+Provider configuration status is **not** a verified indication of live inference.
+Agent execution totals, token spending and quality evaluations are not available
+in this Admin API, so Switchboard deliberately leaves those metrics unreported.
+
 ### 4. Run Your Coding Agent
 
 Claude Code:
