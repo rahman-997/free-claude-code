@@ -1010,21 +1010,25 @@ stable_version_is_supported() {
     current=${1%%+*}
     minimum=${2%%+*}
 
-    old_ifs=$IFS
-    IFS=.
-    set -- $current
-    current_major=${1:-0}
-    current_minor=${2:-0}
-    current_patch=${3:-0}
-    set -- $minimum
-    minimum_major=${1:-0}
-    minimum_minor=${2:-0}
-    minimum_patch=${3:-0}
-    IFS=$old_ifs
-
-    case "$current_major$current_minor$current_patch$minimum_major$minimum_minor$minimum_patch" in
-        *[!0-9]*) return 1 ;;
-    esac
+    # Validate every component before comparing; never split unquoted input.
+    for version in "$current" "$minimum"; do
+        case "$version" in
+            *[!0-9.]*|.*|*.|*..*) return 1 ;;
+        esac
+        rest=${version#*.}
+        [ "$rest" != "$version" ] || return 1
+        patch=${rest#*.}
+        [ "$patch" != "$rest" ] || return 1
+        case "$patch" in *.*) return 1 ;; esac
+    done
+    current_major=${current%%.*}
+    current_rest=${current#*.}
+    current_minor=${current_rest%%.*}
+    current_patch=${current_rest#*.}
+    minimum_major=${minimum%%.*}
+    minimum_rest=${minimum#*.}
+    minimum_minor=${minimum_rest%%.*}
+    minimum_patch=${minimum_rest#*.}
 
     [ "$current_major" -gt "$minimum_major" ] && return 0
     [ "$current_major" -lt "$minimum_major" ] && return 1
