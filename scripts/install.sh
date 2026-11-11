@@ -1009,22 +1009,23 @@ stable_version_is_supported() {
 
     current=${1%%+*}
     minimum=${2%%+*}
+    # Parse dotted components without changing IFS or applying unquoted splitting.
+    case "$current" in *.*.*) : ;; *) return 1 ;; esac
+    case "$minimum" in *.*.*) : ;; *) return 1 ;; esac
+    current_major=${current%%.*}
+    current_tail=${current#*.}
+    current_minor=${current_tail%%.*}
+    current_patch=${current_tail#*.}
+    minimum_major=${minimum%%.*}
+    minimum_tail=${minimum#*.}
+    minimum_minor=${minimum_tail%%.*}
+    minimum_patch=${minimum_tail#*.}
 
-    old_ifs=$IFS
-    IFS=.
-    set -- $current
-    current_major=${1:-0}
-    current_minor=${2:-0}
-    current_patch=${3:-0}
-    set -- $minimum
-    minimum_major=${1:-0}
-    minimum_minor=${2:-0}
-    minimum_patch=${3:-0}
-    IFS=$old_ifs
-
-    case "$current_major$current_minor$current_patch$minimum_major$minimum_minor$minimum_patch" in
-        *[!0-9]*) return 1 ;;
-    esac
+    for component in "$current_major" "$current_minor" "$current_patch" "$minimum_major" "$minimum_minor" "$minimum_patch"; do
+        case "$component" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+    done
 
     [ "$current_major" -gt "$minimum_major" ] && return 0
     [ "$current_major" -lt "$minimum_major" ] && return 1
