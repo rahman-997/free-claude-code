@@ -27,3 +27,12 @@ def test_stable_version_comparison(current, expected):
     script += 'stable_version_is_supported "$1" "0.11.16"\n'
     result = subprocess.run(["sh", "-c", script, "test", current], check=False)
     assert result.returncode == expected
+
+
+def test_comparison_preserves_callers_version():
+    source = (Path(__file__).resolve().parents[2] / "scripts/install.sh").read_text()
+    function = source.split("stable_version_is_supported() {", 1)[1].split("\n}", 1)[0]
+    script = "stable_version_is_supported() {" + function + "\n}\n"
+    script += 'version=1.2.3; stable_version_is_supported "$version" "0.11.16"; [ "$version" = "1.2.3" ]\n'
+    result = subprocess.run(["sh", "-c", script], check=False)
+    assert result.returncode == 0
