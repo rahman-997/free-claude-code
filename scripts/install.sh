@@ -1011,12 +1011,12 @@ stable_version_is_supported() {
     minimum=${2%%+*}
 
     # Validate every component before comparing; never split unquoted input.
-    for version in "$current" "$minimum"; do
-        case "$version" in
+    for candidate in "$current" "$minimum"; do
+        case "$candidate" in
             *[!0-9.]*|.*|*.|*..*) return 1 ;;
         esac
-        rest=${version#*.}
-        [ "$rest" != "$version" ] || return 1
+        rest=${candidate#*.}
+        [ "$rest" != "$candidate" ] || return 1
         patch=${rest#*.}
         [ "$patch" != "$rest" ] || return 1
         case "$patch" in *.*) return 1 ;; esac
