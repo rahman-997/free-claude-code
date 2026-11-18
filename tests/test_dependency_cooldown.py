@@ -3,12 +3,12 @@
 Pure-stdlib checks: no package installation, API keys or network are required.
 """
 
+import pathlib
 import re
 import tomllib
-from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def test_uv_resolver_delays_newly_published_packages():
