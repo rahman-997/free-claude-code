@@ -7,7 +7,6 @@ import pathlib
 import re
 import tomllib
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
