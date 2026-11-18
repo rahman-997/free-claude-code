@@ -22,11 +22,20 @@ def test_long_namespaced_alias_uses_sha256_and_remains_bounded():
 def test_long_namespaced_alias_round_trips_to_original_identity():
     namespace = "team_" + "n" * 40
     name = "function_" + "x" * 60
-    tools = [{"type": "namespace", "name": namespace,
-              "tools": [{"type": "function", "name": name}]}]
+    tools = [
+        {
+            "type": "namespace",
+            "name": namespace,
+            "tools": [{"type": "function", "name": name}],
+        }
+    ]
     alias = responses_tool_name_to_anthropic_name(name, namespace=namespace)
     identity = responses_tool_identity_from_anthropic_name(tools, alias)
-    assert (identity.kind, identity.name, identity.namespace) == ("function", name, namespace)
+    assert (identity.kind, identity.name, identity.namespace) == (
+        "function",
+        name,
+        namespace,
+    )
 
 
 def test_short_namespaced_tool_name_remains_unchanged():

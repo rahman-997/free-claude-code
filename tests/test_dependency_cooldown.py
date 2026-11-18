@@ -2,9 +2,10 @@
 
 Pure-stdlib checks: no package installation, API keys or network are required.
 """
-from pathlib import Path
+
 import re
 import tomllib
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +22,8 @@ def test_both_dependabot_ecosystems_have_cooldowns():
     sections = re.split(r"(?m)^  - package-ecosystem:\s*", config)[1:]
     assert len(sections) == 2
     assert {section.splitlines()[0].strip().strip('"') for section in sections} == {
-        "uv", "github-actions"
+        "uv",
+        "github-actions",
     }
     for section in sections:
         assert re.search(r"(?m)^    cooldown:\s*$\n      default-days: 7\s*$", section)
