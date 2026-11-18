@@ -116,7 +116,8 @@ def responses_tool_name_to_anthropic_name(
     )
     if len(combined) <= _MAX_ANTHROPIC_TOOL_NAME_LEN:
         return combined
-    digest = hashlib.sha1(combined.encode("utf-8")).hexdigest()[:8]
+    # Use a longer SHA-256 suffix to reduce collisions on truncated tool names.
+    digest = hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
     prefix_len = _MAX_ANTHROPIC_TOOL_NAME_LEN - len(digest) - 1
     return f"{combined[:prefix_len]}_{digest}"
 

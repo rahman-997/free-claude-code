@@ -1,4 +1,5 @@
 """Checks the actual portable Shell version parser without sourcing the installer."""
+
 import subprocess
 from pathlib import Path
 
@@ -12,7 +13,9 @@ def test_version_parser_preserves_shell_ifs_and_rejects_untrusted_fields():
     assert source.count(prefix) == 1
     function = source.split(prefix, 1)[1].split(end, 1)[0]
     function = prefix + function
-    script = function + """
+    script = (
+        function
+        + """
 set -eu
 IFS=:
 stable_version_is_supported 0.11.16 0.11.16 || exit 10
@@ -26,5 +29,8 @@ if stable_version_is_supported 0.11 0.11.16; then exit 17; fi
 if stable_version_is_supported 0.11.16.4 0.11.16; then exit 18; fi
 [ "$IFS" = ":" ] || exit 19
 """
-    result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=10, check=False)
+    )
+    result = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=10, check=False
+    )
     assert result.returncode == 0, result.stderr or result.stdout
