@@ -18,3 +18,9 @@ Stacked on `security/installer-semver-ifs-20261111` (existing Draft PR #5). The 
 
 ## Pending
 Run project CI and Semgrep against this branch. Then triage remaining findings separately by true security impact (do not turn 0o700 private credential directories into world-readable directories to satisfy an incorrect heuristic).
+
+## Additional security remediation — 2026-11-18
+- Replaced the SHA-1-based 8-hex suffix for overlong namespaced tool aliases with SHA-256 using 16 hex characters, within the same 64-character maximum.
+- Added 3 pure-stdlib tests for deterministic alias length, long-name lookup round-trip and unchanged short names.
+- This intentionally changes **only the aliases for overlong namespaced tools**. Client-side compatibility requires the project integration tests before merging; both the producing and resolving functions use the same alias helper.
+- Prior Semgrep SHA-1 finding is addressed in code; **not yet validated by a rerun of the original Semgrep scan**. Do not claim the other findings are fixed.
