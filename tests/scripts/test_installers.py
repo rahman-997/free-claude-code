@@ -917,11 +917,39 @@ def test_install_sh_rejects_incompatible_node_for_selected_dsh(
     _assert_uv_ready_without_fcc_install(posix_harness.calls())
 
 
+def _hide_host_node(harness: PosixHarness) -> None:
+    """Replace system dirs on PATH with symlinks that exclude host node/npm/npx.
+
+    A host-installed node in /usr/bin would otherwise make the "no node" scenario run
+    a real global npm install.
+
+    Scope: only the known harness PATH layout "{bin_dir}:/usr/bin:/bin" (plus test-made
+    dirs). It does not hide node/npm installed elsewhere (/usr/local/bin, nvm, Homebrew)
+    because the harness PATH never includes those. Multi-call binaries (busybox) that
+    key off argv[0] resolve through the symlink name, so they keep working; the
+    assertions in the test fail loudly if node/npm are still reachable.
+    """
+    hidden = {"node", "nodejs", "npm", "npx", "corepack"}
+    shadow = harness.root / "host-bin-without-node"
+    shadow.mkdir(exist_ok=True)
+    for directory in ("/usr/bin", "/bin"):
+        for entry in Path(directory).iterdir():
+            target = shadow / entry.name
+            if entry.name in hidden or target.exists() or target.is_symlink():
+                continue
+            target.symlink_to(entry)
+    parts = [p for p in harness.env["PATH"].split(":") if p not in ("/usr/bin", "/bin")]
+    harness.env["PATH"] = ":".join([*parts, str(shadow)])
+
+
 def test_install_sh_noninteractive_skips_dsh_without_node(
     posix_harness: PosixHarness,
 ) -> None:
     (posix_harness.bin_dir / "node").unlink()
     (posix_harness.bin_dir / "npm").unlink()
+    _hide_host_node(posix_harness)
+    assert shutil.which("node", path=posix_harness.env["PATH"]) is None
+    assert shutil.which("npm", path=posix_harness.env["PATH"]) is None
 
     result = posix_harness.run()
 
