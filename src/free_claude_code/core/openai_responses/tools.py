@@ -53,6 +53,12 @@ def convert_tools(value: Any) -> list[dict[str, Any]] | None:
             raise ResponsesConversionError(
                 f"Unsupported Responses tool type: {tool_type!r}"
             )
+    seen: set[str] = set()
+    for tool in tools:
+        name = tool["name"]
+        if name in seen:
+            raise ResponsesConversionError("Duplicate converted Responses tool name")
+        seen.add(name)
     return tools
 
 
